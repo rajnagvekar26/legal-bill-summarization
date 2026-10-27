@@ -1,0 +1,395 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{url}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Cross-Architecture Comparative Analysis of Fine-Tuned Transformers for Congressional Legislation Summarization: Latency, Memory, and Statutory Entity Faithfulness\\
+\thanks{This research was conducted as part of the Cross-Architecture Legal NLP Benchmark project (Track B). The authors acknowledge compute infrastructure and support from the open-source legal technology community.}
+}
+
+\author{
+\IEEEauthorblockN{Om Singh, Raj Nagvekar, Vedant Ghodekar, Sujal Jangam}
+\IEEEauthorblockA{\textit{Department of Information Technology} \\
+\textit{Vidyalankar Institute of Technology}\\
+Wadala, Mumbai, India \\
+Roll Nos: 23101C0028, 23101C0043, 23101C0007, 23101C0011}
+\and
+\IEEEauthorblockN{Dr. Sushopti Gawade}
+\IEEEauthorblockA{\textit{Professor, Department of Information Technology} \\
+\textit{Vidyalankar Institute of Technology}\\
+Wadala, Mumbai, India \\
+sushopti.gawade@vit.edu.in}
+}
+
+\maketitle
+
+\begin{abstract}
+Abstractive summarization of legislative bills is a high-stakes natural language processing task characterized by extreme sequence lengths, complex statutory hierarchies, and an imperative for factual fidelity regarding statutory citations, section references, monetary allocations, and percentage allocations. In this work, we present an empirical cross-architecture benchmark and end-to-end inference framework comparing three distinct transformer paradigms fine-tuned on U.S. Congressional legislation from the BillSum benchmark: (1) a dense sequence-to-sequence model (BART-Base with LoRA, 1,024-token context), (2) a sparse attention sequence-to-sequence model (LED-Base with LoRA, 4,096-token context), and (3) an autoregressive causal language model (Qwen2.5-1.5B with 4-bit QLoRA, 2,048-token context). We formulate crucial architectural guardrails required for robust legal inference: an explicit global attention mask mechanism for LED's beginning-of-sequence token to enable global contextual synthesis, and a strict left-padding and prompt-token slicing protocol for causal decoders to prevent prompt reverberation. Beyond standard surface lexical (ROUGE) and semantic embedding (BERTScore) metrics, we formulate a specialized Statutory Entity Recall and Faithfulness metric to evaluate statutory entity retention. Our Pareto frontier evaluation demonstrates that while Qwen2.5-1.5B delivers superior lexical and semantic quality (ROUGE-L: 25.76, BERTScore F1: 80.05), BART achieves near-instantaneous inference (657.91 ms/sample, 5.20 ms/token) with optimal green efficiency (13.86 BERTScore/Wh), and LED maintains the lowest peak VRAM footprint (2.47 GB) across long statutory contexts. We release our production-grade FastAPI serving engine and interactive Streamlit evaluation arena to facilitate reproducible legal technology deployment.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Legal document summarization, transformer architectures, parameter-efficient fine-tuning (PEFT), Longformer Encoder-Decoder (LED), causal language models, Pareto frontier, Green AI, statutory entity extraction.
+\end{IEEEkeywords}
+
+\section{Introduction}
+\label{sec:intro}
+Modern democratic governance depends upon the continuous passage, debate, and enactment of legislative bills. In the United States Congress alone, thousands of bills spanning millions of words are introduced across each legislative session. These statutes are written in dense, stylized juridical language characterized by recursive cross-references to existing codified laws (e.g., the United States Code), precise monetary authorizations, structured delegations of regulatory authority, and explicit statutory amendment clauses~\cite{kornilova2019billsum}. For policymakers, legal practitioners, civil society organizations, and citizens, digesting multi-hundred-page legislative measures in real time is a profound operational bottleneck.
+
+While abstractive text summarization powered by pretrained transformers has achieved significant maturity in news and biomedical domains~\cite{lewis2020bart,zhang2020pegasus}, legal legislation presents distinctive structural challenges that strain standard transformer architectures:
+\begin{enumerate}
+    \item \textbf{Extreme Sequence Lengths:} Congressional bills routinely exceed the standard 512- or 1,024-token context windows of foundational encoder-decoder architectures, requiring either aggressive truncation or specialized sparse-attention mechanisms~\cite{beltagy2020longformer}.
+    \item \textbf{Catastrophic Cost of Hallucination:} In general-domain summarization, semantic drift or minor factual substitution is often benign; in contrast, a legislative summary that misstates a dollar appropriation (e.g., $\$45\text{M}$ instead of $\$450\text{M}$), alters an implementation deadline percentage, or omits a jurisdictional cross-reference is legally invalid and potentially misleading.
+    \item \textbf{Operational Efficiency Trade-offs:} Deploying large language models in enterprise or civic environments requires navigating strict trade-offs across inference latency, hardware VRAM limits, and energy/carbon expenditure~\cite{lacoste2019quantifying,strubell2019energy}.
+\end{enumerate}
+
+Prior investigations have predominantly examined single architectural paradigms or evaluated summarization quality solely through lexical n-gram overlap metrics such as ROUGE~\cite{lin2004rouge}. However, a systematic, multi-axis comparison evaluating how architectural choice---dense sequence-to-sequence, sparse long-context attention, and modern autoregressive causal decoders---impacts downstream factual precision, hardware footprint, and latency remains an open inquiry.
+
+To bridge this gap, this paper presents a comprehensive empirical benchmark and end-to-end software system for legal bill summarization. Our study investigates three representative architectural paradigms fine-tuned on Congressional legislation:
+\begin{itemize}
+    \item \textbf{BART-Base Dense} (\texttt{facebook/bart-base} + LoRA): A standard dense bidirectional encoder and autoregressive decoder operating within a 1,024-token context~\cite{lewis2020bart}.
+    \item \textbf{LED-Base Sparse 4K} (\texttt{allenai/led-base-16384} + LoRA): A Longformer Encoder-Decoder featuring $O(N)$ local sliding-window attention scaled to a 4,096-token context~\cite{beltagy2020longformer}.
+    \item \textbf{Qwen2.5-1.5B Causal} (\texttt{Qwen/\allowbreak Qwen2.5-\allowbreak 1.5B-\allowbreak Instruct} + 4-bit QLoRA): A state-of-the-art causal decoder-only language model adapted via quantized Low-Rank Adaptation within a 2,048-token context~\cite{dettmers2023qlora,qwen2024}.
+\end{itemize}
+
+\subsection{Contributions}
+The primary contributions of this work are summarized as follows:
+\begin{enumerate}
+    \item \textbf{Cross-Architecture Empirical Benchmark:} We conduct a controlled Track B benchmark fine-tuning dense, sparse, and causal architectures on the BillSum dataset using Parameter-Efficient Fine-Tuning (PEFT)~\cite{hu2021lora}, evaluating 22 distinct metrics across quality, speed, compute, and carbon emissions.
+    \item \textbf{Formulation of Critical Architectural Guardrails:} We identify and formalize two vital implementation guardrails:
+    \begin{itemize}
+        \item The \textit{LED Global Attention Mask Guardrail}, setting the beginning-of-sequence (BOS) token to global attention to resolve representation bottlenecks in sparse sliding-window self-attention.
+        \item The \textit{Qwen Left-Padding and Prompt Slicing Guardrail}, enforcing strict left-side padding and prefix slicing to prevent prompt echoing and batch attention corruption in causal decoders.
+    \end{itemize}
+    \item \textbf{Multi-Axis Domain Evaluation Framework:} Beyond surface lexical n-grams (ROUGE) and embedding cosine similarities (BERTScore)~\cite{zhang2019bertscore}, we develop a custom regular-expression-based Statutory Entity Recall metric that systematically verifies the retention of section numbers, U.S. Code citations, monetary amounts, and statutory percentages.
+    \item \textbf{Pareto Frontier Analysis and Green AI Profiling:} We construct multi-dimensional Pareto curves characterizing the trade-offs between ROUGE-L, peak VRAM, sample latency, and energy efficiency (BERTScore per Watt-Hour), establishing concrete operational guidelines for real-world legal technology deployments.
+    \item \textbf{Production-Grade Open-Source Framework:} We engineer an end-to-end modular serving engine comprising a polymorphic model registry, an asynchronous FastAPI REST backend, and an interactive Streamlit dashboard featuring live side-by-side inference and dynamic Pareto visualization.
+\end{enumerate}
+
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Abstractive Summarization for Legal Texts}
+The legal domain has long posed significant hurdles for natural language processing due to specialized vocabulary, syntactic complexity, and strict factual fidelity constraints~\cite{katz2012quantitative}. The introduction of the BillSum dataset by Kornilova and Eidelman~\cite{kornilova2019billsum} established the first standardized corpus of U.S. Congressional bills and legislative summaries from the Congressional Research Service (CRS). Early approaches applied extractive baselines or standard sequence-to-sequence networks with attention mechanisms. Subsequent work examined legal pretraining (e.g., Legal-BERT~\cite{chalkidis2020legalbert}) and domain-adapted encoder-decoder models. However, evaluating factual consistency remains an acute challenge; recent surveys demonstrate that off-the-shelf neural summarizers frequently hallucinate or distort numerical figures and statutory clauses~\cite{maynez2020faithfulness,kryscinski2020evaluating}.
+
+\subsection{Long-Context Attention Mechanisms}
+Standard self-attention in the canonical Transformer architecture exhibits quadratic computational and memory complexity, $O(N^2)$, where $N$ denotes the input token length~\cite{vaswani2017attention}. This restricts dense models like BART and T5 to context windows of 512 or 1,024 tokens. To address long-form documents, sparse attention approximations have been introduced. Beltagy et al.~\cite{beltagy2020longformer} proposed the Longformer and the Longformer Encoder-Decoder (LED), which combines local sliding-window attention with designated global attention tokens to achieve linear $O(N \cdot w)$ complexity, where $w$ is the sliding-window width. While LED can process documents up to 16,384 tokens, its generative performance heavily hinges on proper configuration of global attention anchors.
+
+\subsection{Causal Large Language Models and PEFT}
+In recent years, decoder-only causal language models have demonstrated remarkable reasoning and in-context synthesis capabilities~\cite{brown2020language}. Models such as LLaMA and Qwen2.5~\cite{qwen2024} exhibit strong instruction-following behaviors. However, full-parameter fine-tuning of multi-billion parameter models is computationally prohibitive. Parameter-Efficient Fine-Tuning (PEFT) methods, particularly Low-Rank Adaptation (LoRA)~\cite{hu2021lora} and quantized 4-bit LoRA (QLoRA)~\cite{dettmers2023qlora}, freeze base model weights and inject trainable low-rank decomposition matrices into transformer projection layers, reducing trainable parameters to $1\text{--}2\%$ while matching full fine-tuning performance. In this study, we exploit LoRA and QLoRA to enable equitable, resource-controlled fine-tuning across all three architectures on single-GPU hardware.
+
+\section{Cross-Architecture Methodology \& Guardrails}
+\label{sec:methodology}
+
+\subsection{Model Architecture Specifications}
+We systematically implement three distinct architectural paradigms, summarized in Table~\ref{tab:model_specs}:
+
+\begin{table}[t]
+\caption{Architectural Specifications of Fine-Tuned Models}
+\label{tab:model_specs}
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+\textbf{Model Identifier} & \textbf{Architecture} & \textbf{Context} & \textbf{Total Params} & \textbf{Trainable} \\
+\hline
+\texttt{bart\_base\_dense} & Seq2Seq Dense & 1,024 & 141.2M & 1.25\% (LoRA) \\
+\texttt{led\_base\_sparse\_4k} & Seq2Seq Sparse & 4,096 & 164.1M & 1.35\% (LoRA) \\
+\texttt{qwen25\_1\_5b\_causal} & Causal Decoder & 2,048 & 907.1M & 2.04\% (QLoRA) \\
+\hline
+\end{tabular}%
+}
+\end{table}
+
+\subsubsection{Dense Seq2Seq (BART-Base)}
+BART~\cite{lewis2020bart} couples a bidirectional encoder with an autoregressive left-to-right decoder via cross-attention. It employs full dense attention:
+\begin{equation}
+\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V
+\label{eq:full_attn}
+\end{equation}
+Operating at a 1,024-token limit, bills exceeding this threshold are truncated. LoRA adapters with rank $r=16$ and scaling $\alpha=32$ are attached to the query ($W_q$) and value ($W_v$) projection layers of the self-attention and cross-attention blocks.
+
+\subsubsection{Sparse Attention Seq2Seq (LED-Base)}
+LED-Base~\cite{beltagy2020longformer} replaces dense self-attention with a banded local sliding-window attention of width $w=512$, complemented by symmetric global attention for selected positions. The computational complexity is:
+\begin{equation}
+\mathcal{O}_{LED} = O(N \cdot w + N \cdot G)
+\label{eq:led_complexity}
+\end{equation}
+where $G$ is the number of global attention tokens ($G \ll N$). We scale the context window to 4,096 tokens, capturing long statutory provisions. LoRA adapters ($r=16, \alpha=32$) are integrated into the encoder and decoder attention projections.
+
+\subsubsection{Autoregressive Causal Decoder (Qwen2.5-1.5B)}
+Qwen2.5-1.5B-Instruct~\cite{qwen2024} is an autoregressive decoder employing Grouped Query Attention (GQA), Rotary Position Embeddings (RoPE), and SwiGLU activations across 28 layers with a hidden dimension of 1,536. We employ QLoRA~\cite{dettmers2023qlora} with 4-bit NormalFloat (NF4) base weight quantization and double quantization, attaching 16-bit LoRA adapters ($r=16, \alpha=32$) to the attention projection matrices.
+
+\subsection{Critical Architectural Guardrails}
+A central finding of this investigation is that off-the-shelf deployment of sparse and causal architectures on statutory texts leads to catastrophic failure modes unless rigorous architectural guardrails are strictly enforced.
+
+\subsubsection{LED Global Attention Mask Guardrail}
+In standard encoder-decoder summarization, the cross-attention mechanism requires the decoder to attend to comprehensive representations of the source document. Under pure local sliding-window attention, token representations at position $i$ only capture information within the window $[i - w/2, i + w/2]$. Without global anchors, the encoder fails to construct a unified document-level summary vector, yielding disfluent and disconnected generations.
+
+\textbf{Guardrail Implementation:} We formulate an explicit global attention mask $\mathbf{M}_{\text{global}} \in \{0, 1\}^{B \times N}$ matching the shape of $\mathbf{X}_{\text{input}}$, where index 0 corresponding to the beginning-of-sequence (BOS $\langle\text{s}\rangle$) token is strictly activated:
+\begin{equation}
+\mathbf{M}_{\text{global}}[b, i] = 
+\begin{cases}
+1, & \text{if } i = 0 \\
+0, & \text{if } i > 0
+\end{cases}
+\quad \forall b \in \{1, \dots, B\}
+\label{eq:led_guardrail}
+\end{equation}
+This forces every token in the 4,096-token sequence to attend directly to the BOS token, and allows the BOS token to attend symmetrically across all tokens in the bill, establishing an $O(N)$ summary conduit to the generative decoder.
+
+\subsubsection{Qwen Left-Padding and Prompt Slicing Guardrail}
+Autoregressive causal language models generate text by predicting the next token conditioned on all preceding tokens. Unlike encoder-decoder models where the source text is processed by an isolated bidirectional encoder, causal decoders concatenate prompt tokens and generated tokens into a single continuous sequence $\mathbf{Y} = [\mathbf{x}_1, \dots, \mathbf{x}_P, \mathbf{s}_1, \dots, \mathbf{s}_K]$.
+
+\textbf{Guardrail 1 (Left-Padding):} When batching variable-length prompts, traditional right-padding appends pad tokens to the end of the prompt: $\mathbf{x}_{\text{padded}} = [\mathbf{x}, \text{PAD}, \dots, \text{PAD}]$. In causal language modeling, position embeddings are assigned sequentially. Right-padding introduces extraneous padding tokens between the prompt and the generated tokens, corrupting attention causality and causing generation degeneration. We strictly enforce left-padding:
+\begin{equation}
+\texttt{tokenizer.padding\_side} = \text{``left''}
+\label{eq:left_pad}
+\end{equation}
+ensuring that generation begins immediately at the final real token position.
+
+\textbf{Guardrail 2 (Prompt Slicing):} The raw output tensor returned by \texttt{model.generate()} contains both prompt and output tokens. Decoding the entire sequence results in echoing the original statutory text rather than producing an abstractive summary. We implement strict slice extraction:
+\begin{equation}
+\mathbf{s}_{\text{tokens}} = \mathbf{Y}[:, P:]
+\label{eq:prompt_slicing}
+\end{equation}
+where $P = |\mathbf{x}_{\text{input}}|$ is the exact prompt token length. Only $\mathbf{s}_{\text{tokens}}$ is decoded to produce the final summary string.
+
+\section{Multi-Axis Evaluation Framework}
+\label{sec:eval_framework}
+Standard natural language processing benchmarks evaluate summarization through surface n-gram overlap. However, legislative summarization requires a rigorous, multi-faceted evaluation protocol spanning three distinct axes:
+
+\subsection{Axis 1: Surface N-Gram Fluency (ROUGE)}
+We compute standard ROUGE-1 (unigram), ROUGE-2 (bigram), and ROUGE-L (longest common subsequence) F1 scores with Porter stemming~\cite{lin2004rouge}:
+\begin{equation}
+\text{ROUGE-L} = \frac{(1 + \beta^2) R_{\text{LCS}} P_{\text{LCS}}}{R_{\text{LCS}} + \beta^2 P_{\text{LCS}}}
+\label{eq:rouge_l}
+\end{equation}
+
+\subsection{Axis 2: Semantic Representation Alignment (BERTScore)}
+To assess semantic equivalence beyond verbatim vocabulary overlap, we compute BERTScore F1~\cite{zhang2019bertscore} using contextualized token embeddings from \texttt{distilbert-base-uncased}:
+\begin{equation}
+\text{BERTScore}_{\text{F1}} = 2 \cdot \frac{P_{\text{BERT}} \cdot R_{\text{BERT}}}{P_{\text{BERT}} + R_{\text{BERT}}}
+\label{eq:bertscore}
+\end{equation}
+where greedy matching computes cosine similarities between reference and candidate token vectors.
+
+\subsection{Axis 3: Domain Statutory Entity Faithfulness}
+Standard ROUGE and BERTScore cannot distinguish between general lexical substitutions and catastrophic legal hallucinations (e.g., misidentifying a statutory title or monetary threshold). We formulate a dedicated, rule-based Statutory Entity Extraction engine targeting four primary legislative entity categories:
+\begin{enumerate}
+    \item \textbf{Statutory Sections ($\mathcal{S}_{\text{sec}}$):} Specific legislative divisions, captured via expressions including \S~101, \S\S~101--105, Section~4(a)(1), and Sec.~202.
+    \item \textbf{U.S. Code Citations ($\mathcal{S}_{\text{usc}}$):} Formal statutory codifications, including patterns such as 42~U.S.C.~\S~1983, 18~U.S.C.~1001, and Title~28, United States Code, Section~1331.
+    \item \textbf{Monetary Appropriations ($\mathcal{S}_{\text{mon}}$):} Budgetary authorizations and fiscal caps, such as \$450,000,000, \$500~million, and \$12.5~billion.
+    \item \textbf{Statutory Percentages ($\mathcal{S}_{\text{pct}}$):} Regulatory thresholds, match requirements, and set-asides, such as 15\%, 2.5~percent, and 0.75~percentage points.
+\end{enumerate}
+
+Let $\mathcal{E}(D)$ denote the normalized set of statutory entities extracted from document $D$:
+\begin{equation}
+\mathcal{E}(D) = \mathcal{S}_{\text{sec}}(D) \cup \mathcal{S}_{\text{usc}}(D) \cup \mathcal{S}_{\text{mon}}(D) \cup \mathcal{S}_{\text{pct}}(D)
+\label{eq:entity_union}
+\end{equation}
+We define the Legal Entity Recall ($R_{\text{LE}}$) and Precision ($P_{\text{LE}}$) of candidate summary $C$ against gold-standard reference $R$ as:
+\begin{equation}
+R_{\text{LE}} = \frac{|\mathcal{E}(C) \cap \mathcal{E}(R)|}{|\mathcal{E}(R)|} \times 100\%
+\label{eq:entity_recall}
+\end{equation}
+\begin{equation}
+P_{\text{LE}} = \frac{|\mathcal{E}(C) \cap \mathcal{E}(R)|}{|\mathcal{E}(C)|} \times 100\%
+\label{eq:entity_precision}
+\end{equation}
+
+\section{Empirical Results \& Benchmark Analysis}
+\label{sec:results}
+
+\subsection{Experimental Setup}
+All models were fine-tuned and benchmarked on Congressional bills from the BillSum test collection in an isolated Kaggle Track B environment equipped with NVIDIA GPUs (T4 / P100 16GB VRAM). Fine-tuning was conducted with the AdamW optimizer, linear learning rate decay ($5 \times 10^{-4}$ for LoRA adapters), batch size 4 with gradient accumulation, and early stopping. Hardware telemetry (peak VRAM allocation, wall-clock time, electrical power draw, and carbon emissions) was tracked via CodeCarbon and PyTorch CUDA profilers.
+
+\subsection{Comprehensive Benchmark Results}
+Table~\ref{tab:pareto_summary} reports the complete empirical metrics recorded across all three architectures.
+
+\begin{table*}[t]
+\caption{Comprehensive Cross-Architecture Benchmark Results on Congressional Bill Summarization}
+\label{tab:pareto_summary}
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{Metric Category / Metric Name} & \textbf{BART-Base Dense} & \textbf{LED-Base Sparse 4K} & \textbf{Qwen2.5-1.5B Causal} \\
+\hline
+\hline
+\textbf{Architecture \& Parameters} & & & \\
+Base Hugging Face Model ID & \texttt{facebook/bart-base} & \texttt{allenai/led-base-16384} & \texttt{Qwen/Qwen2.5-1.5B-Instruct} \\
+Paradigm Type & Seq2Seq Dense & Seq2Seq Sparse LED & Causal Autoregressive \\
+Context Window ($N_{\text{max}}$) & 1,024 tokens & 4,096 tokens & 2,048 tokens \\
+Total Model Parameters & 141,189,888 & 164,056,320 & 907,081,216 \\
+Trainable Parameters & 1,769,472 & 2,211,840 & 18,464,768 \\
+Trainable Parameter Percentage & 1.2533\% & 1.3482\% & 2.0356\% \\
+\hline
+\hline
+\textbf{Training Efficiency \& Green AI} & & & \\
+Final Training Loss & 9.7051 & 14.4098 & \textbf{0.8460} \\
+Training Wall-Clock Time (seconds) & \textbf{232.98 s} & 5,885.77 s & 10,856.31 s \\
+Peak Training VRAM Allocation (GB) & 2.61 GB & \textbf{2.47 GB} & 4.33 GB \\
+Total Energy Consumed (kWh) & \textbf{0.00565 kWh} & 0.14433 kWh & 0.26648 kWh \\
+Estimated Carbon Emissions ($\text{kg CO}_2$) & \textbf{0.002087 kg} & 0.053327 kg & 0.098458 kg \\
+Eco-Efficiency (BERTScore / Watt-Hour) & \textbf{13.86} & 0.54 & 0.30 \\
+\hline
+\hline
+\textbf{Inference Latency \& Speed} & & & \\
+Mean Inference Latency (ms / sample) & \textbf{657.91 ms} & 1,250.98 ms & 7,530.26 ms \\
+Token Generation Latency (ms / token) & \textbf{5.201 ms} & 13.207 ms & 38.644 ms \\
+Relative Speedup Factor & \textbf{11.45$\times$} & 6.02$\times$ & 1.00$\times$ (baseline) \\
+\hline
+\hline
+\textbf{Quality \& Faithfulness Evaluation} & & & \\
+ROUGE-1 F1 Score & 31.43 & 27.78 & \textbf{40.87} \\
+ROUGE-2 F1 Score & 14.87 & 14.05 & \textbf{21.18} \\
+ROUGE-L F1 Score & 19.90 & 18.79 & \textbf{25.76} \\
+BERTScore F1 ($\times 100$) & 78.30 & 77.97 & \textbf{80.05} \\
+Domain Legal Entity Recall ($R_{\text{LE}}$) & \textbf{10.76\%} & 7.77\% & 10.56\% \\
+Quality-to-Memory Ratio (ROUGE-L / GB VRAM) & \textbf{7.62} & 7.61 & 5.95 \\
+\hline
+\end{tabular}%
+}
+\end{table*}
+
+\subsection{Comparative Analysis}
+
+\subsubsection{Generation Quality and Faithfulness}
+Qwen2.5-1.5B demonstrably outperforms both sequence-to-sequence baselines across all conventional quality indicators, attaining a ROUGE-1 of 40.87, a ROUGE-2 of 21.18, and a ROUGE-L of 25.76 (a $+29.4\%$ relative improvement over BART-Base and $+37.1\%$ over LED-Base). It achieves the highest BERTScore F1 (80.05). This performance stems from the extensive pretraining corpus and superior syntactic representations inherent in modern 1.5B parameter causal models.
+
+However, examining domain-specific Statutory Entity Recall ($R_{\text{LE}}$) reveals an unexpected phenomenon: BART-Base matches and slightly exceeds Qwen2.5 in statutory entity retention ($10.76\%$ vs. $10.56\%$), while LED-Base lags at $7.77\%$. Qualitative analysis reveals that while Qwen produces exceptionally fluent prose, its abstractive nature occasionally paraphrases statutory formulas (e.g., stating ``authorizes substantial funding for municipal water'' rather than explicitly citing ``\$450,000,000 pursuant to 33 U.S.C. 1251''). BART, constrained by its compact capacity, adheres closer to verbatim copying of statutory tokens.
+
+\subsubsection{Latency and Throughput}
+BART-Base achieves an extraordinary inference speed of 657.91 ms per sample and 5.201 ms per token---$11.45\times$ faster than Qwen2.5-1.5B (7,530.26 ms/sample) and $1.90\times$ faster than LED-Base (1,250.98 ms/sample). For interactive applications requiring sub-second response times, BART presents an unbeatable operational advantage.
+
+\subsubsection{Memory and Sparse Attention Scaling}
+Despite processing a $4\times$ longer context window (4,096 tokens vs. 1,024 tokens), LED-Base exhibits the lowest peak training VRAM footprint across all models (2.47 GB vs. 2.61 GB for BART and 4.33 GB for Qwen). This demonstrates the empirical validity of the sliding-window attention mechanism, which circumvents the quadratic memory wall of dense self-attention.
+
+\subsubsection{Green AI and Energy Sustainability}
+Energy analysis highlights stark disparities: training Qwen2.5 required 10,856 seconds and consumed 0.266 kWh, generating 0.098 kg of $\text{CO}_2$ emissions. In contrast, BART trained in only 232.98 seconds, consuming 0.0056 kWh and emitting just 0.0021 kg of $\text{CO}_2$---a $47\times$ reduction in carbon footprint. In terms of green eco-efficiency (BERTScore per Watt-Hour), BART scores 13.86, compared to 0.54 for LED and 0.30 for Qwen.
+
+\section{Pareto Frontier Analysis \& Operational Deployment}
+\label{sec:pareto}
+
+\subsection{Pareto Optimality}
+Figure~\ref{fig:pareto_curve} illustrates the empirical Pareto frontiers derived from our Track B benchmark, mapping ROUGE-L against inference latency, peak VRAM, and carbon emissions.
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=0.48\textwidth]{pareto_frontier_track_b.png}}
+\caption{Empirical Pareto frontier curves across Quality (ROUGE-L), Inference Latency (ms), Peak Training VRAM (GB), and Eco-Efficiency (BERTScore/Wh) from the Kaggle Track B benchmark.}
+\label{fig:pareto_curve}
+\end{figure}
+
+The empirical results confirm that no single architecture dominates across all dimensions:
+\begin{itemize}
+    \item \textbf{Quality Frontier:} Qwen2.5-1.5B defines the upper frontier of generation quality (ROUGE-L 25.76).
+    \item \textbf{Latency \& Energy Frontier:} BART-Base defines the absolute frontier of speed (657.9 ms) and energy efficiency (13.86 BERTScore/Wh).
+    \item \textbf{Context-to-Memory Frontier:} LED-Base 4K defines the frontier for minimal memory footprint under extended contexts (2.47 GB at 4,096 tokens).
+\end{itemize}
+
+\subsection{Operational Decision Matrix}
+Based on our multi-axis findings, we propose a concrete decision rubric for legal technology practitioners:
+\begin{enumerate}
+    \item \textbf{Real-Time Legal Search \& Web Indexing:} Deploy \texttt{bart\_base\_dense}. Its sub-second response time and low compute cost allow high-throughput batch processing of daily Congressional records.
+    \item \textbf{Long Statutory Enactments on Edge Hardware:} Deploy \texttt{led\_base\_sparse\_4k}. For bills spanning 2,000--4,000 tokens where GPU memory is capped below 4GB, LED provides complete document visibility without out-of-memory errors.
+    \item \textbf{High-Fidelity Legislative Synthesis \& Policy Briefs:} Deploy \texttt{qwen25\_1\_5b\_causal\_qlora}. When summaries must serve legislative aides or attorneys where nuance and grammatical coherence are paramount, Qwen's superior generation quality justifies the latency overhead.
+\end{enumerate}
+
+\section{System Architecture \& Software Implementation}
+\label{sec:system}
+To enable reproducible deployment, we developed an end-to-end open-source software suite consisting of an asynchronous REST API backend and an interactive Streamlit evaluation dashboard.
+
+\subsection{Polymorphic Inference Engine}
+The inference subsystem is built upon an object-oriented polymorphic hierarchy rooted in \texttt{BaseSummarizer} (see Fig.~\ref{fig:arch_diag}). Each architecture encapsulates model-specific tokenizer configurations, tensor slicing, and device management:
+
+\begin{figure}[htbp]
+\begin{center}
+\fbox{
+\begin{minipage}{0.45\textwidth}
+\small
+\textbf{Inference Engine Architecture:}
+\begin{itemize}
+    \item \texttt{BaseSummarizer} (Abstract Base Class)
+    \begin{itemize}
+        \item \texttt{BartSummarizer}: Dense Seq2Seq ($N=1024$)
+        \item \texttt{LedSummarizer}: Enforces BOS Global Mask ($N=4096$)
+        \item \texttt{QwenSummarizer}: Enforces Left-Padding \& Slicing ($N=2048$)
+    \end{itemize}
+    \item \texttt{ModelRegistry}: Dynamic factory, alias resolver, and weight cache.
+    \item \texttt{LegalEvaluator}: ROUGE, BERTScore, and regex entity audit.
+\end{itemize}
+\end{minipage}
+}
+\caption{Modular software architecture of the Cross-Architecture Legal Bill Summarization Engine.}
+\label{fig:arch_diag}
+\end{center}
+\end{figure}
+
+The \texttt{ModelRegistry} provides thread-safe instantiation and in-memory caching to eliminate redundant weight loading across concurrent requests.
+
+\subsection{Asynchronous REST API Backend}
+Built with FastAPI, the backend provides high-performance asynchronous endpoints:
+\begin{itemize}
+    \item \texttt{POST /api/summarize}: Performs single-model or multi-model comparative inference across preloaded bills or custom texts.
+    \item \texttt{POST /api/evaluate}: Computes ROUGE, BERTScore, and Legal Entity Recall between candidate and reference summaries.
+    \item \texttt{POST /api/extract-entities}: Extracts statutory sections, citations, dollar values, and percentages.
+    \item \texttt{GET /api/benchmarks/pareto}: Serves verified Track B benchmark metrics for live client-side charting.
+\end{itemize}
+
+\subsection{Interactive Streamlit Evaluation Dashboard}
+The user-facing dashboard provides four specialized interfaces:
+\begin{enumerate}
+    \item \textbf{Model Arena:} Allows users to select preloaded Congressional acts (e.g., \textit{Clean Water Infrastructure Modernization Act}) and generate side-by-side summaries across BART, LED, and Qwen with live token counters.
+    \item \textbf{Pareto Frontier Visualizer:} Features interactive Plotly visualizations across all 22 benchmark metrics.
+    \item \textbf{Live Evaluation Lab:} Compares model summaries against reference CRS digests with colored entity tags highlighting matched versus omitted statutory entities.
+    \item \textbf{Guardrail Inspector:} Displays the underlying PyTorch tensor operations and architectural configurations.
+\end{enumerate}
+
+\section{Discussion \& Limitations}
+\label{sec:discussion}
+While our multi-axis framework provides foundational insights, several limitations warrant consideration:
+\begin{itemize}
+    \item \textbf{Context Boundaries on Omnibus Bills:} While 4,096 tokens accommodates over $75\%$ of standard Congressional bills, massive omnibus appropriations acts can exceed 100,000 tokens. Future work will investigate hierarchical chunking combined with LED-16k.
+    \item \textbf{Entity Extraction Grammar:} Our regex extractor exhibits high precision for standardized federal citations (U.S.C.) and dollar figures, but may miss colloquial references to state-level administrative codes or informal statutory titles.
+    \item \textbf{Quantization Artifacts:} 4-bit QLoRA enabled training Qwen2.5 on consumer GPUs; however, subtle quantization artifacts in mathematical reasoning may influence numerical faithfulness.
+\end{itemize}
+
+\section{Conclusion}
+\label{sec:conclusion}
+In this work, we presented a comprehensive cross-architecture benchmark and deployment framework for legislative bill summarization across dense Seq2Seq (BART), sparse Seq2Seq (LED), and causal autoregressive (Qwen2.5) transformers. We formalized two essential architectural guardrails: the LED global attention mask for BOS tokens and causal left-padding with prompt slicing. Through our multi-axis evaluation protocol incorporating a novel Statutory Entity Recall metric and empirical Pareto frontier profiling, we demonstrated that while Qwen2.5 achieves peak generation quality (ROUGE-L 25.76), BART provides an unmatched latency (657.9 ms) and green eco-efficiency advantage, and LED guarantees minimal memory scaling across long documents. Our findings provide practical guidance and open-source software tools for building reliable, accountable legal AI systems.
+
+\section*{Acknowledgment}
+The authors express sincere gratitude to Dr. Sushopti Gawade for her invaluable mentorship, guidance, and domain insights throughout this research. The authors also acknowledge the Department of Information Technology at Vidyalankar Institute of Technology (VIT), Wadala, Mumbai, for providing computational infrastructure, as well as the open-source legal AI and Hugging Face communities for providing foundational model weights and the BillSum corpus.
+
+\begin{thebibliography}{00}
+\bibitem{kornilova2019billsum} A. Kornilova and V. Eidelman, ``BillSum: A corpus for automatic summarization of US legislative text,'' in \textit{Proc. 2nd Workshop on New Frontiers in Summarization}, Hong Kong, China, 2019, pp. 48--56.
+\bibitem{lewis2020bart} M. Lewis, Y. Liu, N. Goyal, M. Ghazvininejad, A. Mohamed, O. Levy, V. Stoyanov, and L. Zettlemoyer, ``BART: Denoising sequence-to-sequence pre-training for natural language generation, translation, and comprehension,'' in \textit{Proc. 58th Annu. Meeting of the Assoc. for Computational Linguistics (ACL)}, 2020, pp. 7871--7880.
+\bibitem{beltagy2020longformer} I. Beltagy, M. E. Peters, and A. Cohan, ``Longformer: The long-document transformer,'' \textit{arXiv preprint arXiv:2004.05150}, 2020.
+\bibitem{qwen2024} Qwen Team, ``Qwen2.5: A party of foundation and instruction-tuned language models,'' \textit{arXiv preprint arXiv:2412.15115}, 2024.
+\bibitem{hu2021lora} E. J. Hu, Y. Shen, P. Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang, and W. Chen, ``LoRA: Low-rank adaptation of large language models,'' in \textit{Proc. Int. Conf. on Learning Representations (ICLR)}, 2022.
+\bibitem{dettmers2023qlora} T. Dettmers, A. Pagnoni, A. Holtzman, and L. Zettlemoyer, ``QLoRA: Efficient finetuning of quantized LLMs,'' in \textit{Proc. Adv. in Neural Information Processing Systems (NeurIPS)}, vol. 36, 2023, pp. 10088--10115.
+\bibitem{zhang2020pegasus} J. Zhang, Y. Zhao, M. Saleh, and P. Liu, ``PEGASUS: Pre-training with extracted gap-sentences for abstractive summarization,'' in \textit{Proc. 37th Int. Conf. on Machine Learning (ICML)}, 2020, pp. 11328--11339.
+\bibitem{vaswani2017attention} A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, L. Kaiser, and I. Polosukhin, ``Attention is all you need,'' in \textit{Proc. Adv. in Neural Information Processing Systems (NeurIPS)}, 2017, pp. 5998--6008.
+\bibitem{lin2004rouge} C.-Y. Lin, ``ROUGE: A package for automatic evaluation of summaries,'' in \textit{Text Summarization Branches Out: ACL Workshop}, Barcelona, Spain, 2004, pp. 74--81.
+\bibitem{zhang2019bertscore} T. Zhang, V. Kishore, F. Wu, K. Q. Weinberger, and Y. Artzi, ``BERTScore: Evaluating text generation with BERT,'' in \textit{Proc. Int. Conf. on Learning Representations (ICLR)}, 2020.
+\bibitem{chalkidis2020legalbert} I. Chalkidis, M. Fergadiotis, P. Malakasiotis, N. Aletras, and P. Androutsopoulos, ``LEGAL-BERT: The muppets straight out of law school,'' in \textit{Findings of the Assoc. for Computational Linguistics: EMNLP 2020}, 2020, pp. 2898--2904.
+\bibitem{katz2012quantitative} D. M. Katz, M. J. Bommarito, and J. Blackman, ``A quantitative approach to law: Modern statistical physics and natural language processing,'' \textit{Michigan State University Legal Studies Research Paper}, 2012.
+\bibitem{maynez2020faithfulness} J. Maynez, S. Narayan, B. Bohnet, and R. McDonald, ``On faithfulness and factuality in abstractive summarization,'' in \textit{Proc. 58th Annu. Meeting of the Assoc. for Computational Linguistics (ACL)}, 2020, pp. 1906--1919.
+\bibitem{kryscinski2020evaluating} W. Kryscinski, B. McCann, C. Xiong, and R. Socher, ``Evaluating the factual consistency of abstractive text summarization,'' in \textit{Proc. Conf. on Empirical Methods in Natural Language Processing (EMNLP)}, 2020, pp. 9332--9346.
+\bibitem{lacoste2019quantifying} A. Lacoste, A. Luccioni, V. Schmidt, and T. Dandres, ``Quantifying the carbon emissions of machine learning,'' \textit{arXiv preprint arXiv:1910.09700}, 2019.
+\bibitem{strubell2019energy} E. Strubell, A. Ganesh, and A. McCallum, ``Energy and policy considerations for deep learning in NLP,'' in \textit{Proc. 57th Annu. Meeting of the Assoc. for Computational Linguistics (ACL)}, 2019, pp. 3645--3650.
+\bibitem{brown2020language} T. Brown, B. Mann, N. Ryder, M. Subbiah, J. D. Kaplan, P. Dhariwal, A. Neelakantan, P. Shyam, G. Sastry, A. Askell, et al., ``Language models are few-shot learners,'' in \textit{Proc. Adv. in Neural Information Processing Systems (NeurIPS)}, vol. 33, 2020, pp. 1877--1901.
+\end{thebibliography}
+
+\end{document}

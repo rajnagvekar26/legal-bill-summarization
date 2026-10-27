@@ -1,0 +1,4 @@
+model_key,hf_model_id,arch_type,max_source_length,config_fingerprint,total_params,trainable_params,trainable_pct,train_loss,train_wall_sec,peak_train_vram_gb,energy_kwh,emissions_kg_co2,inference_latency_ms_per_sample,inference_latency_ms_per_token,rouge1,rouge2,rougeL,bertscore_f1,legal_entity_recall_pct,rougeL_per_vram_gb,bertscore_per_watt_hour
+bart_base_dense,facebook/bart-base,seq2seq_dense,1024,fc6c9cc1e722,141189888,1769472,1.2533,9.7051,232.98,2.61,0.00565,0.002087,657.91,5.201,31.43,14.87,19.9,78.3,10.76,7.62,13.86
+led_base_sparse_4k,allenai/led-base-16384,seq2seq_sparse_led,4096,c38195a7eea4,164056320,2211840,1.3482,14.4098,5885.77,2.47,0.14433,0.053327,1250.98,13.207,27.78,14.05,18.79,77.97,7.77,7.61,0.54
+qwen25_1_5b_causal_qlora,Qwen/Qwen2.5-1.5B-Instruct,causal_decoder,2048,f753edca969c,907081216,18464768,2.0356,0.846,10856.31,4.33,0.26648,0.098458,7530.26,38.644,40.87,21.18,25.76,80.05,10.56,5.95,0.3

@@ -1,0 +1,95 @@
+[
+  {
+    "model_key": "bart_base_dense",
+    "smoke_test_passed": true,
+    "peak_vram_stress_gb": 2.73,
+    "overfit_loss_trajectory": [
+      3.7159,
+      3.5987,
+      3.6688,
+      3.3011,
+      3.3358
+    ],
+    "overfit_grad_norms": [
+      1.7192,
+      1.5176,
+      1.6778,
+      1.3249,
+      1.8458
+    ],
+    "sample_latency_ms": 1393.56,
+    "token_latency_ms": 5.444,
+    "dry_run_metrics": {
+      "rouge1": 34.79,
+      "rouge2": 12.11,
+      "rougeL": 18.42,
+      "bertscore_f1": 77.03,
+      "legal_entity_recall_pct": 12.5
+    },
+    "total_params": 141189888,
+    "trainable_params": 1769472,
+    "trainable_pct": 1.2533
+  },
+  {
+    "model_key": "led_base_sparse_4k",
+    "smoke_test_passed": true,
+    "peak_vram_stress_gb": 2.57,
+    "overfit_loss_trajectory": [
+      2.4679,
+      2.2775,
+      2.2016,
+      1.9886,
+      1.8801
+    ],
+    "overfit_grad_norms": [
+      1.414,
+      1.3055,
+      1.2837,
+      1.2701,
+      1.2686
+    ],
+    "sample_latency_ms": 1878.91,
+    "token_latency_ms": 7.339,
+    "dry_run_metrics": {
+      "rouge1": 35.28,
+      "rouge2": 11.74,
+      "rougeL": 19.4,
+      "bertscore_f1": 77.38,
+      "legal_entity_recall_pct": 12.5
+    },
+    "total_params": 164056320,
+    "trainable_params": 2211840,
+    "trainable_pct": 1.3482
+  },
+  {
+    "model_key": "qwen25_1_5b_causal_qlora",
+    "smoke_test_passed": true,
+    "peak_vram_stress_gb": 4.1,
+    "overfit_loss_trajectory": [
+      0.953,
+      0.726,
+      0.5272,
+      0.3602,
+      0.2396
+    ],
+    "overfit_grad_norms": [
+      1.6113,
+      0.9042,
+      0.8227,
+      0.6598,
+      0.5602
+    ],
+    "sample_latency_ms": 7551.01,
+    "token_latency_ms": 29.525,
+    "dry_run_metrics": {
+      "rouge1": 30.78,
+      "rouge2": 12.24,
+      "rougeL": 17.88,
+      "bertscore_f1": 75.93,
+      "legal_entity_recall_pct": 12.5
+    },
+    "total_params": 907081216,
+    "trainable_params": 18464768,
+    "trainable_pct": 2.0356
+  }
+]

@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+artifacts/models/*/best_adapter/
+artifacts/models/*/checkpoint-*/
+track_b_outputs/
+__results___files/
+
+artifacts/models/
+# Generated analysis files
+graphify-out/

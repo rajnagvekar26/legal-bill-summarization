@@ -1,0 +1,17 @@
+torch
+transformers
+peft
+accelerate
+bitsandbytes
+datasets
+evaluate
+rouge-score
+bert-score
+fastapi
+uvicorn
+streamlit
+pandas
+plotly
+pytest
+pydantic
+requests
